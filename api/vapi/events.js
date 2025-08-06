@@ -1,32 +1,38 @@
-const express = require("express");
-const bodyParser = require("body-parser");
-const app = express();
-app.use(bodyParser.json());
+// api/vapi/events.js
 
-app.post("/vapi/events", (req, res) => {
-  let body = req.body || {};
-  if (typeof body === "string") {
-    try { body = JSON.parse(body); } catch (e) { body = {}; }
-  }
-
-  if (!body || body.type !== "tool-call" || !body.toolCall) {
+export default async function handler(req, res) {
+  // Only process POST requests
+  if (req.method !== "POST") {
     return res.status(200).json({ ok: true });
   }
 
-  const { id: toolCallId, name } = body.toolCall;
-
-  let result;
-  if (name === "create_ticket") {
-    const ticketId = `TCK-${Date.now().toString().slice(-6)}`;
-    result = { ticket_id: ticketId };
-  } else if (name === "page_oncall") {
-    result = { status: "sent" };
-  } else {
-    result = { ok: true };
+  // Parse incoming body
+  const body = req.body || {};
+  if (body.type !== "tool-call" || !body.toolCall) {
+    return res.status(200).json({ ok: true });
   }
 
-  return res.status(200).json({ toolCallId, result });
-});
+  // Extract tool call data
+  const { id: toolCallId, name, arguments: args = {} } = body.toolCall;
+  let result;
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Webhook listening on :${PORT}`));
+  // Handle each tool by name
+  switch (name) {
+    case "create_ticket":
+      // Generate a simple ticket ID
+      result = { ticket_id: `TCK-${Date.now().toString().slice(-6)}` };  
+      break;
+
+    case "page_oncall":
+      // Simulate paging on-call
+      result = { status: "sent" };
+      break;
+
+    default:
+      // For all other calls, no action needed
+      result = { ok: true };
+  }
+
+  // Vapi expects { toolCallId, result }
+  return res.status(200).json({ toolCallId, result });
+}
