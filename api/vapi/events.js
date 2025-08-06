@@ -1,38 +1,52 @@
 // api/vapi/events.js
+export default function handler(req, res) {
+  // Only allow POST requests
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
 
-export default async function handler(req, res) {
-  // Only process POST requests
-  if (req.method !== "POST") {
+  let body = req.body || {};
+  
+  // Parse body if it's a string
+  if (typeof body === "string") {
+    try { 
+      body = JSON.parse(body); 
+    } catch (e) { 
+      body = {}; 
+    }
+  }
+
+  // Return early if not a tool-call event
+  if (!body || body.type !== "tool-call" || !body.toolCall) {
     return res.status(200).json({ ok: true });
   }
 
-  // Parse incoming body
-  const body = req.body || {};
-  if (body.type !== "tool-call" || !body.toolCall) {
-    return res.status(200).json({ ok: true });
-  }
+  const { id: toolCallId, name } = body.toolCall;
 
-  // Extract tool call data
-  const { id: toolCallId, name, arguments: args = {} } = body.toolCall;
   let result;
-
-  // Handle each tool by name
-  switch (name) {
-    case "create_ticket":
-      // Generate a simple ticket ID
-      result = { ticket_id: `TCK-${Date.now().toString().slice(-6)}` };  
-      break;
-
-    case "page_oncall":
-      // Simulate paging on-call
-      result = { status: "sent" };
-      break;
-
-    default:
-      // For all other calls, no action needed
-      result = { ok: true };
+  
+  if (name === "create_ticket") {
+    // Generate a unique ticket ID
+    const ticketId = `TCK-${Date.now().toString().slice(-6)}`;
+    result = { ticket_id: ticketId };
+    
+    console.log(`Created ticket: ${ticketId}`);
+    
+  } else if (name === "page_oncall") {
+    result = { status: "sent" };
+    
+    console.log("On-call page sent");
+    
+  } else {
+    // Handle unknown tool calls
+    result = { ok: true };
+    
+    console.log(`Unknown tool call: ${name}`);
   }
 
-  // Vapi expects { toolCallId, result }
-  return res.status(200).json({ toolCallId, result });
+  // Return the result to VAPI
+  return res.status(200).json({ 
+    toolCallId, 
+    result 
+  });
 }
