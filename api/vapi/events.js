@@ -1,98 +1,102 @@
 // api/vapi/events.js
 export default async function handler(req, res) {
-  console.log('Webhook called:', new Date().toISOString());
+  console.log('=== WEBHOOK CALLED ===');
+  console.log('Timestamp:', new Date().toISOString());
   console.log('Method:', req.method);
-  console.log('Headers:', JSON.stringify(req.headers, null, 2));
-  console.log('Body:', JSON.stringify(req.body, null, 2));
+  console.log('Raw body type:', typeof req.body);
+  console.log('Raw body:', req.body);
 
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
-  res.setHeader('Access-Control-Max-Age', '86400');
 
   if (req.method === 'OPTIONS') {
-    console.log('Handling OPTIONS request');
     return res.status(200).end();
   }
 
   if (req.method !== 'POST') {
-    console.log(`Method ${req.method} not allowed`);
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  let body = req.body || {};
+  let body = req.body;
   
   if (typeof body === "string") {
     try { 
       body = JSON.parse(body); 
-      console.log('Parsed body from string');
     } catch (e) { 
-      console.log('Failed to parse body as JSON:', e.message);
-      body = {}; 
+      console.log('JSON parse error:', e.message);
+      return res.status(400).json({ error: 'Invalid JSON' });
     }
   }
 
-  console.log('Processing body:', JSON.stringify(body, null, 2));
+  console.log('Processed body:', JSON.stringify(body, null, 2));
 
-  // Handle both VAPI format (tool-calls) and direct format (tool-call)
-  let toolCall = null;
-  let toolCallId = null;
-  
-  if (body?.message?.type === "tool-calls" && body?.message?.toolCalls?.length > 0) {
-    console.log('Detected VAPI tool-calls format');
-    const firstCall = body.message.toolCalls[0];
-    if (firstCall.type === "function" && firstCall.function) {
-      let functionArgs = {};
+  // Handle VAPI message format
+  let messageData = body;
+  if (body.message) {
+    messageData = body.message;
+  }
+
+  console.log('Message data:', JSON.stringify(messageData, null, 2));
+
+  // Check for tool calls
+  if (messageData.type === "tool-calls" && Array.isArray(messageData.toolCalls)) {
+    console.log('Found tool calls:', messageData.toolCalls.length);
+    
+    const results = [];
+    
+    for (const toolCall of messageData.toolCalls) {
+      console.log('Processing tool call:', JSON.stringify(toolCall, null, 2));
       
-      // Handle arguments - could be string or object
-      if (typeof firstCall.function.arguments === 'string') {
-        try {
-          functionArgs = JSON.parse(firstCall.function.arguments);
-        } catch (e) {
-          console.log('Failed to parse function arguments as JSON:', e.message);
-          console.log('Raw arguments:', firstCall.function.arguments);
-          functionArgs = {};
+      if (toolCall.type === "function" && toolCall.function) {
+        const functionName = toolCall.function.name;
+        let functionArgs = {};
+        
+        // Parse arguments safely
+        const args = toolCall.function.arguments;
+        if (typeof args === 'string') {
+          try {
+            functionArgs = JSON.parse(args);
+          } catch (e) {
+            console.log('Failed to parse arguments:', args);
+            functionArgs = {};
+          }
+        } else if (args && typeof args === 'object') {
+          functionArgs = args;
         }
-      } else if (typeof firstCall.function.arguments === 'object') {
-        functionArgs = firstCall.function.arguments || {};
+        
+        console.log(`Calling function: ${functionName}`);
+        console.log('Arguments:', JSON.stringify(functionArgs, null, 2));
+        
+        let result = await processToolCall(functionName, functionArgs);
+        
+        results.push({
+          toolCallId: toolCall.id,
+          result: result
+        });
       }
-      
-      toolCall = {
-        name: firstCall.function.name,
-        parameters: functionArgs
-      };
-      toolCallId = firstCall.id;
-      console.log('Parsed function arguments:', functionArgs);
     }
-  } else if (body?.type === "tool-call" && body?.toolCall) {
-    console.log('Detected direct tool-call format');
-    toolCall = body.toolCall;
-    toolCallId = toolCall.id;
-  } else {
-    console.log('Not a recognized tool call format');
-    return res.status(200).json({ 
-      ok: true, 
-      debug: 'not-a-tool-call',
-      received_type: body?.type,
-      message_type: body?.message?.type
-    });
+    
+    console.log('Sending results:', JSON.stringify(results, null, 2));
+    
+    // Return array of results for multiple tool calls
+    if (results.length === 1) {
+      return res.status(200).json(results[0]);
+    } else {
+      return res.status(200).json({ results: results });
+    }
   }
 
-  if (!toolCall || !toolCall.name) {
-    console.log('Invalid tool call structure');
-    return res.status(200).json({ ok: true, debug: 'invalid-tool-call' });
-  }
+  // Fallback for non-tool-call requests
+  console.log('Not a tool call, returning OK');
+  return res.status(200).json({ ok: true });
+}
 
-  const { name, parameters } = toolCall;
-  console.log(`Processing tool: ${name} with ID: ${toolCallId}`);
-  console.log('Parameters:', JSON.stringify(parameters, null, 2));
-
-  let result;
+async function processToolCall(name, parameters) {
+  console.log(`Processing: ${name}`);
   
   try {
     if (name === "create_ticket") {
-      console.log('Creating maintenance ticket');
-      
       const timestamp = Date.now();
       const ticketId = `TCK-${timestamp.toString().slice(-6)}`;
       
@@ -105,12 +109,8 @@ export default async function handler(req, res) {
         best_time = "",
         issue_text = "",
         access_granted = false
-      } = parameters || {};
+      } = parameters;
       
-      console.log('Extracted data:', {
-        tenant_name, unit, phone, priority, property, best_time, issue_text, access_granted
-      });
-
       const ticketData = {
         ticket_id: ticketId,
         status: "created",
@@ -130,34 +130,27 @@ export default async function handler(req, res) {
         }
       };
 
-      console.log('Created ticket:', JSON.stringify(ticketData, null, 2));
+      console.log('Created ticket data:', JSON.stringify(ticketData, null, 2));
 
-      // Save to Google Sheets if configured
+      // Save to Google Sheets
       try {
         if (process.env.GOOGLE_SHEETS_API_KEY && process.env.SPREADSHEET_ID) {
-          console.log('Saving to Google Sheets');
-          await saveTicketToGoogleSheets(ticketData);
-          console.log('Successfully saved to Google Sheets');
-        } else {
-          console.log('Google Sheets not configured');
+          await saveToSheet(ticketData);
+          console.log('Saved to Google Sheets');
         }
-      } catch (sheetError) {
-        console.error('Google Sheets save failed:', sheetError);
+      } catch (error) {
+        console.error('Sheet save error:', error.message);
       }
 
-      result = { 
+      return { 
         ticket_id: ticketId,
         status: "created",
         timestamp: timestamp,
-        message: `Maintenance ticket ${ticketId} created for ${tenant_name} at ${property} unit ${unit}`,
-        ticket_data: ticketData
+        message: `Ticket ${ticketId} created for ${tenant_name} at ${property} unit ${unit}`,
+        success: true
       };
 
-      console.log('create_ticket result:', JSON.stringify(result, null, 2));
-
     } else if (name === "page_oncall") {
-      console.log('Paging on-call technician');
-      
       const timestamp = Date.now();
       const { 
         ticket_id = "",
@@ -166,59 +159,39 @@ export default async function handler(req, res) {
         property = "",
         issue_text = "",
         callback_number = ""
-      } = parameters || {};
+      } = parameters;
 
-      console.log('page_oncall parameters:', {
-        ticket_id, unit, priority, property, issue_text, callback_number
-      });
-
-      result = { 
+      return { 
         status: "sent",
         timestamp: timestamp,
+        message: `On-call technician notified for ${property} unit ${unit}`,
         ticket_id: ticket_id,
-        message: `On-call technician notified for ticket ${ticket_id} at ${property} unit ${unit}`,
-        notification_details: {
-          ticket_id, unit, priority, property, issue_text, callback_number
-        }
+        success: true
       };
-
-      console.log('page_oncall result:', JSON.stringify(result, null, 2));
 
     } else {
       console.log(`Unknown tool: ${name}`);
-      result = { 
+      return { 
         status: "error",
-        message: `Unknown tool: ${name}. Available tools: create_ticket, page_oncall`
+        message: `Unknown tool: ${name}`,
+        success: false
       };
     }
 
   } catch (error) {
-    console.error('Error processing tool call:', error);
-    result = {
+    console.error(`Error in ${name}:`, error);
+    return {
       status: "error",
-      message: `Error processing ${name}: ${error.message}`
+      message: error.message,
+      success: false
     };
   }
-
-  const response = { 
-    toolCallId, 
-    result 
-  };
-
-  console.log('Sending response:', JSON.stringify(response, null, 2));
-  console.log('Webhook processing complete');
-
-  return res.status(200).json(response);
 }
 
-async function saveTicketToGoogleSheets(ticketData) {
+async function saveToSheet(ticketData) {
   const API_KEY = process.env.GOOGLE_SHEETS_API_KEY;
   const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
   const SHEET_NAME = process.env.SHEET_NAME || 'Tenant Complain';
-
-  if (!API_KEY || !SPREADSHEET_ID) {
-    throw new Error('Google Sheets configuration missing');
-  }
 
   const rowData = [
     ticketData.ticket_id,
@@ -229,7 +202,7 @@ async function saveTicketToGoogleSheets(ticketData) {
     ticketData.tenant_info.unit,
     ticketData.issue_details.description,
     ticketData.issue_details.priority,
-    ticketData.tenant_info.best_time,
+    ticketData.tenant_info.best_time || '',
     ticketData.tenant_info.access_granted ? 'Yes' : 'No',
     ticketData.status
   ];
@@ -243,8 +216,7 @@ async function saveTicketToGoogleSheets(ticketData) {
   });
 
   if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Google Sheets API Error: ${error}`);
+    throw new Error(`Sheets API error: ${response.status}`);
   }
 
   return await response.json();
