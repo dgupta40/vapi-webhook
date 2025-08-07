@@ -9,7 +9,6 @@ export default async function handler(req, res) {
   console.log('Raw body type:', typeof req.body);
   console.log('Raw body:', req.body);
 
-  // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader(
     'Access-Control-Allow-Methods',
@@ -28,7 +27,6 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // Parse JSON body
   let body = req.body;
   if (typeof body === 'string') {
     try {
@@ -41,14 +39,14 @@ export default async function handler(req, res) {
 
   console.log('Processed body:', JSON.stringify(body, null, 2));
 
-  // VAPI message format
+  // Handle VAPI message format
   let messageData = body;
   if (body.message) {
     messageData = body.message;
   }
   console.log('Message data:', JSON.stringify(messageData, null, 2));
 
-  // Handle tool-calls
+  // Check for tool calls
   if (
     messageData.type === 'tool-calls' &&
     Array.isArray(messageData.toolCalls)
@@ -57,7 +55,11 @@ export default async function handler(req, res) {
     const results = [];
 
     for (const toolCall of messageData.toolCalls) {
-      console.log('Processing tool call:', JSON.stringify(toolCall, null, 2));
+      console.log(
+        'Processing tool call:',
+        JSON.stringify(toolCall, null, 2)
+      );
+
       if (toolCall.type === 'function' && toolCall.function) {
         const functionName = toolCall.function.name;
         let functionArgs = {};
@@ -66,15 +68,22 @@ export default async function handler(req, res) {
         if (typeof args === 'string') {
           try {
             functionArgs = JSON.parse(args);
-          } catch {
+          } catch (e) {
+            console.log('Failed to parse arguments:', args);
             functionArgs = {};
           }
         } else if (args && typeof args === 'object') {
           functionArgs = args;
         }
 
+        console.log(`Calling function: ${functionName}`);
+        console.log('Arguments:', JSON.stringify(functionArgs, null, 2));
+
         const result = await processToolCall(functionName, functionArgs);
-        results.push({ toolCallId: toolCall.id, result });
+        results.push({
+          toolCallId: toolCall.id,
+          result: result,
+        });
       }
     }
 
@@ -84,7 +93,7 @@ export default async function handler(req, res) {
       : res.status(200).json({ results });
   }
 
-  // Fallback
+  // Fallback for non-tool-call requests
   console.log('Not a tool call, returning OK');
   return res.status(200).json({ ok: true });
 }
@@ -96,6 +105,7 @@ async function processToolCall(name, parameters) {
     if (name === 'create_ticket') {
       const timestamp = Date.now();
       const ticketId = `TCK-${timestamp.toString().slice(-6)}`;
+
       const {
         name: tenant_name = '',
         unit = '',
@@ -110,19 +120,19 @@ async function processToolCall(name, parameters) {
       const ticketData = {
         ticket_id: ticketId,
         status: 'created',
-        timestamp,
+        timestamp: timestamp,
         created_date: new Date().toISOString(),
         tenant_info: {
-          tenant_name,
-          phone,
-          property,
-          unit,
-          best_time,
-          access_granted,
+          name: tenant_name,
+          phone: phone,
+          property: property,
+          unit: unit,
+          best_time: best_time,
+          access_granted: access_granted,
         },
         issue_details: {
           description: issue_text,
-          priority,
+          priority: priority,
         },
       };
 
@@ -131,27 +141,53 @@ async function processToolCall(name, parameters) {
         JSON.stringify(ticketData, null, 2)
       );
 
-      // Save to Google Sheets
+      // === NEW: save via service account JWT ===
       try {
         await saveToSheet(ticketData);
-      } catch (err) {
-        console.error('Sheet save error:', err.message);
+        console.log('Saved to Google Sheets');
+      } catch (error) {
+        console.error('Sheet save error:', error.message);
       }
 
+      // Always log ticket data for backup
       console.log('=== TICKET CREATED ===');
+      console.log(`Ticket ID: ${ticketData.ticket_id}`);
+      console.log(`Date: ${ticketData.created_date}`);
+      console.log(`Tenant: ${ticketData.tenant_info.name}`);
+      console.log(`Phone: ${ticketData.tenant_info.phone}`);
+      console.log(`Property: ${ticketData.tenant_info.property}`);
+      console.log(`Unit: ${ticketData.tenant_info.unit}`);
+      console.log(
+        `Issue: ${ticketData.issue_details.description}`
+      );
+      console.log(
+        `Priority: ${ticketData.issue_details.priority}`
+      );
+      console.log('========================');
+
       return {
         ticket_id: ticketId,
         status: 'created',
-        timestamp,
+        timestamp: timestamp,
         message: `Ticket ${ticketId} created for ${tenant_name} at ${property} unit ${unit}`,
         success: true,
       };
     } else if (name === 'page_oncall') {
       const timestamp = Date.now();
+      const {
+        ticket_id = '',
+        unit = '',
+        priority = '',
+        property = '',
+        issue_text = '',
+        callback_number = '',
+      } = parameters;
+
       return {
         status: 'sent',
-        timestamp,
-        message: `On-call technician notified for ticket ${parameters.ticket_id}`,
+        timestamp: timestamp,
+        message: `On-call technician notified for ${property} unit ${unit}`,
+        ticket_id: ticket_id,
         success: true,
       };
     } else {
@@ -172,51 +208,57 @@ async function processToolCall(name, parameters) {
   }
 }
 
-// --- Google Sheets Integration via Service Account JWT ---
+// ========== SERVICE-ACCOUNT SHEETS INTEGRATION ==========
 
+// Lazily initialize a single JWT client
 let sheetsClient;
 async function getSheetsClient() {
   if (!sheetsClient) {
-    // Decode service-account JSON from base64 env-var
     const key = JSON.parse(
-      Buffer.from(process.env.GOOGLE_SA_KEY_BASE64, 'base64').toString()
+      Buffer.from(
+        process.env.GOOGLE_SA_KEY_BASE64,
+        'base64'
+      ).toString()
     );
-
     const auth = new google.auth.JWT({
       email: key.client_email,
       key: key.private_key,
       scopes: ['https://www.googleapis.com/auth/spreadsheets'],
     });
-
     sheetsClient = google.sheets({ version: 'v4', auth });
   }
   return sheetsClient;
 }
 
+// Append a row of ticketData into your sheet
 async function saveToSheet(ticketData) {
   const sheets = await getSheetsClient();
-  const row = [
+  const rowData = [
     [
       ticketData.ticket_id,
       ticketData.created_date,
-      ticketData.tenant_info.tenant_name,
+      ticketData.tenant_info.name,
       ticketData.tenant_info.phone,
       ticketData.tenant_info.property,
       ticketData.tenant_info.unit,
       ticketData.issue_details.description,
       ticketData.issue_details.priority,
       ticketData.tenant_info.best_time || '',
-      ticketData.tenant_info.access_granted ? 'Yes' : 'No',
+      ticketData.tenant_info.access_granted
+        ? 'Yes'
+        : 'No',
       ticketData.status,
     ],
   ];
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: process.env.SPREADSHEET_ID,
-    range: `${process.env.SHEET_NAME || 'Tenant Complain'}!A:K`,
+    range: `${process.env.SHEET_NAME ||
+      'Tenant Complain'}!A:K`,
     valueInputOption: 'USER_ENTERED',
-    requestBody: { values: row },
+    requestBody: { values: rowData },
   });
-
-  console.log(' Ticket saved via service account');
+  console.log(
+    ' Ticket saved via service account JWT'
+  );
 }
