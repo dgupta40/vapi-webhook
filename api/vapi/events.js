@@ -137,10 +137,24 @@ async function processToolCall(name, parameters) {
         if (process.env.GOOGLE_SHEETS_API_KEY && process.env.SPREADSHEET_ID) {
           await saveToSheet(ticketData);
           console.log('Saved to Google Sheets');
+        } else {
+          console.log('Google Sheets not configured');
         }
       } catch (error) {
         console.error('Sheet save error:', error.message);
       }
+
+      // Always log ticket data for backup
+      console.log('=== TICKET CREATED ===');
+      console.log(`Ticket ID: ${ticketData.ticket_id}`);
+      console.log(`Date: ${ticketData.created_date}`);
+      console.log(`Tenant: ${ticketData.tenant_info.name}`);
+      console.log(`Phone: ${ticketData.tenant_info.phone}`);
+      console.log(`Property: ${ticketData.tenant_info.property}`);
+      console.log(`Unit: ${ticketData.tenant_info.unit}`);
+      console.log(`Issue: ${ticketData.issue_details.description}`);
+      console.log(`Priority: ${ticketData.issue_details.priority}`);
+      console.log('========================');
 
       return { 
         ticket_id: ticketId,
@@ -193,6 +207,11 @@ async function saveToSheet(ticketData) {
   const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
   const SHEET_NAME = process.env.SHEET_NAME || 'Tenant Complain';
 
+  if (!API_KEY || !SPREADSHEET_ID) {
+    console.log('Google Sheets not configured, skipping save');
+    return;
+  }
+
   const rowData = [
     ticketData.ticket_id,
     ticketData.created_date,
@@ -207,17 +226,50 @@ async function saveToSheet(ticketData) {
     ticketData.status
   ];
 
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${SHEET_NAME}:append?valueInputOption=RAW&key=${API_KEY}`;
-  
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ values: [rowData] })
-  });
+  console.log('Attempting to save to Google Sheets...');
+  console.log('Spreadsheet ID:', SPREADSHEET_ID);
+  console.log('Sheet name:', SHEET_NAME);
+  console.log('Row data:', rowData);
 
-  if (!response.ok) {
-    throw new Error(`Sheets API error: ${response.status}`);
+  try {
+    // Use the public sheets API endpoint for reading/writing
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${SHEET_NAME}:append?valueInputOption=USER_ENTERED&key=${API_KEY}`;
+    
+    console.log('API URL:', url);
+    
+    const requestBody = {
+      values: [rowData]
+    };
+    
+    console.log('Request body:', JSON.stringify(requestBody));
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(requestBody)
+    });
+
+    console.log('Response status:', response.status);
+    console.log('Response headers:', Object.fromEntries(response.headers.entries()));
+    
+    const responseText = await response.text();
+    console.log('Response text:', responseText);
+
+    if (!response.ok) {
+      throw new Error(`Sheets API error ${response.status}: ${responseText}`);
+    }
+
+    const result = JSON.parse(responseText);
+    console.log('Successfully saved to Google Sheets:', result);
+    return result;
+
+  } catch (error) {
+    console.error('Google Sheets save failed:', error.message);
+    console.error('Full error:', error);
+    
+    // Don't throw the error - just log it so ticket creation still works
+    return null;
   }
-
-  return await response.json();
 }
