@@ -1,2 +1,10 @@
 ﻿node_modules/
 .vercel
+.env
+.env.local
+.env.production
+.env.development
+package-lock.json
+yarn.lock
+.DS_Store
+*.log
