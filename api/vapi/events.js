@@ -42,11 +42,27 @@ export default async function handler(req, res) {
     console.log('Detected VAPI tool-calls format');
     const firstCall = body.message.toolCalls[0];
     if (firstCall.type === "function" && firstCall.function) {
+      let functionArgs = {};
+      
+      // Handle arguments - could be string or object
+      if (typeof firstCall.function.arguments === 'string') {
+        try {
+          functionArgs = JSON.parse(firstCall.function.arguments);
+        } catch (e) {
+          console.log('Failed to parse function arguments as JSON:', e.message);
+          console.log('Raw arguments:', firstCall.function.arguments);
+          functionArgs = {};
+        }
+      } else if (typeof firstCall.function.arguments === 'object') {
+        functionArgs = firstCall.function.arguments || {};
+      }
+      
       toolCall = {
         name: firstCall.function.name,
-        parameters: JSON.parse(firstCall.function.arguments || '{}')
+        parameters: functionArgs
       };
       toolCallId = firstCall.id;
+      console.log('Parsed function arguments:', functionArgs);
     }
   } else if (body?.type === "tool-call" && body?.toolCall) {
     console.log('Detected direct tool-call format');
